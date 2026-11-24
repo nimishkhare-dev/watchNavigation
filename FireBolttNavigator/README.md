@@ -70,3 +70,17 @@ This source package was created in an environment without the Android SDK/Gradle
 - `WatchFaceEncoder.java` — renders and packages the 368 x 448 route card as a Type-C face.
 - `WatchBleClient.java` — BLE scanning, connection checks, GATT setup and experimental 0x74 upload.
 - `app/src/main/assets/map.html` — Leaflet / OpenStreetMap phone map.
+
+
+## Live watch navigation mirror
+
+The Android app now has an opt-in live watch mirror. Calculate a route, connect the Fire-Boltt, then tap **START LIVE NAVIGATION ON WATCH** once to install the route view and enable refreshes.
+
+- GPS updates continue to drive the phone map and route-step progress.
+- The watch face is rebuilt around the current GPS position and shows the next approximately 1.8 km of route, rather than fitting the entire journey into the tiny display.
+- The watch image is refreshed after roughly 35 m of movement or a next-turn change, with a minimum 45-second interval between full face uploads.
+- Turn text alerts are sent separately when the maneuver changes, and distance buckets update no more often than every 12 seconds.
+- Only one full face upload is allowed at a time. A refresh requested during an upload is queued and reconsidered after completion.
+- Stop Navigation disables the live mirror.
+
+**Important limitations:** the full-image refresh still uses the experimental MoYoung Type-C / 0x74 upload flow. That flow has not been verified on the exact Fire-Boltt 046 firmware, so successful BLE transfer does not guarantee that the watch firmware will replace/render every refreshed face. The app must remain open and receiving GPS updates; this branch does not yet provide background/foreground-service navigation or automatic off-route recalculation. Keep Da Fit disconnected while testing the BLE link.
