@@ -1,0 +1,23 @@
+name: Export Android source for live navigation update
+on:
+  push:
+    branches: [inspect-live-navigation]
+    paths:
+      - ".github/workflows/export-fireboltt-project.yml"
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract Android Studio project
+        run: |
+          mkdir -p exported
+          unzip -q FireBolttNavigator/FireBolttNavigator_Navigation_UX_Update.zip -d exported
+          test -f exported/FireBolttNavigator/app/src/main/java/com/nimish/firebolttnavigator/MainActivity.java
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firebolttnavigator-source
+          path: exported/FireBolttNavigator
+          if-no-files-found: error
