@@ -172,7 +172,7 @@ public final class WatchFaceEncoder {
         p.setColor(Color.rgb(94, 234, 212)); p.setTextSize(15); p.setFakeBoldText(true);
         canvas.drawText("FIREBOLTT NAV", 18, 27, p);
         p.setColor(Color.rgb(148, 163, 184)); p.setTextSize(11); p.setFakeBoldText(false);
-        canvas.drawText("ROUTE OVERVIEW", 18, 45, p);
+        canvas.drawText("NEAR-FIELD NAVIGATION  •  100 M AHEAD", 18, 45, p);
         canvas.drawLine(16, 56, width - 16, 56, linePaint(Color.rgb(46, 64, 86), 1.2f));
 
         String destination = route.destination == null ? "Destination" : route.destination.name;
@@ -192,75 +192,119 @@ public final class WatchFaceEncoder {
 
         List<RouteEngine.Point> allPoints = route.geometry;
         if (allPoints != null && !allPoints.isEmpty()) {
-            // Show the next ~1.8 km around the moving position, not a tiny full-route overview.
+            /*
+             * Fixed near-field viewport:
+             * - about 100 m of route ahead of the live GPS fix
+             * - 20 m behind the fix for context
+             * - 35 m either side of the fix
+             * The map is not fitted to the whole trip or to the route's overall bounds.
+             */
+            final double viewLeftMeters = -35.0;
+            final double viewRightMeters = 35.0;
+            final double viewBottomMeters = -20.0;
+            final double viewTopMeters = 100.0;
+
+            double safeLat = Double.isFinite(currentLat) ? currentLat : route.origin.latitude;
+            double safeLon = Double.isFinite(currentLon) ? currentLon : route.origin.longitude;
+            double longitudeMetersPerDegree = 111320.0 * Math.max(0.15,
+                    Math.cos(Math.toRadians(safeLat)));
+
             int nearest = 0;
             double nearestDistance = Double.MAX_VALUE;
             for (int i = 0; i < allPoints.size(); i++) {
                 RouteEngine.Point point = allPoints.get(i);
-                double d = haversineMeters(currentLat, currentLon, point.latitude, point.longitude);
-                if (d < nearestDistance) { nearestDistance = d; nearest = i; }
+                double distance = haversineMeters(safeLat, safeLon, point.latitude, point.longitude);
+                if (distance < nearestDistance) {
+                    nearestDistance = distance;
+                    nearest = i;
+                }
             }
 
+            // Convert only the route immediately ahead into local metres.
             List<RouteEngine.Point> visible = new ArrayList<>();
-            if (Double.isFinite(currentLat) && Double.isFinite(currentLon)) {
-                visible.add(new RouteEngine.Point(currentLat, currentLon));
-            } else {
-                visible.add(allPoints.get(nearest));
-            }
-            double aheadMeters = 0;
+            visible.add(new RouteEngine.Point(safeLat, safeLon));
             RouteEngine.Point previous = allPoints.get(nearest);
+            double travelledAhead = 0.0;
             for (int i = nearest; i < allPoints.size(); i++) {
                 RouteEngine.Point point = allPoints.get(i);
-                if (i > nearest) aheadMeters += haversineMeters(previous.latitude, previous.longitude,
-                        point.latitude, point.longitude);
+                if (i > nearest) {
+                    travelledAhead += haversineMeters(previous.latitude, previous.longitude,
+                            point.latitude, point.longitude);
+                }
                 visible.add(point);
                 previous = point;
-                if (aheadMeters >= 1800) break;
+                if (travelledAhead >= 100.0) break;
             }
-            if (visible.size() < 2 && allPoints.size() > 1) visible.add(allPoints.get(allPoints.size() - 1));
 
-            double minLat = Double.MAX_VALUE, maxLat = -Double.MAX_VALUE;
-            double minLon = Double.MAX_VALUE, maxLon = -Double.MAX_VALUE;
-            for (RouteEngine.Point point : visible) {
-                minLat = Math.min(minLat, point.latitude); maxLat = Math.max(maxLat, point.latitude);
-                minLon = Math.min(minLon, point.longitude); maxLon = Math.max(maxLon, point.longitude);
+            float pad = 12f;
+            float usableW = mapBox.width() - 2f * pad;
+            float usableH = mapBox.height() - 2f * pad;
+            double metresWide = viewRightMeters - viewLeftMeters;
+            double metresHigh = viewTopMeters - viewBottomMeters;
+            float scale = (float) Math.min(usableW / metresWide, usableH / metresHigh);
+            float drawnW = (float) (metresWide * scale);
+            float drawnH = (float) (metresHigh * scale);
+            float left = mapBox.centerX() - drawnW / 2f;
+            float top = mapBox.centerY() - drawnH / 2f;
+
+            // Subtle fixed 20 m grid makes the very local scale easier to read.
+            p.setColor(Color.rgb(31, 48, 67));
+            p.setStrokeWidth(1f);
+            p.setStyle(Paint.Style.STROKE);
+            for (int metres = -20; metres <= 100; metres += 20) {
+                float y = top + (float) ((viewTopMeters - metres) * scale);
+                canvas.drawLine(left, y, left + drawnW, y, p);
             }
-            // Give the moving position room on screen and avoid zero-sized bounds.
-            double latPad = Math.max(0.00045, (maxLat - minLat) * 0.18);
-            double lonPad = Math.max(0.00045, (maxLon - minLon) * 0.18);
-            minLat -= latPad; maxLat += latPad; minLon -= lonPad; maxLon += lonPad;
-            float pad = 24;
-            float usableW = mapBox.width() - 2 * pad;
-            float usableH = mapBox.height() - 2 * pad;
-            double latScale = usableH / (maxLat - minLat);
-            double lonScale = usableW / (maxLon - minLon);
-            double scale = Math.min(latScale, lonScale);
-            float drawnW = (float) ((maxLon - minLon) * scale);
-            float drawnH = (float) ((maxLat - minLat) * scale);
-            float offsetX = mapBox.left + (mapBox.width() - drawnW) / 2f;
-            float offsetY = mapBox.top + (mapBox.height() - drawnH) / 2f;
-            Path path = new Path();
-            for (int i = 0; i < visible.size(); i++) {
-                RouteEngine.Point point = visible.get(i);
-                float x = offsetX + (float) ((point.longitude - minLon) * scale);
-                float y = offsetY + drawnH - (float) ((point.latitude - minLat) * scale);
-                if (i == 0) path.moveTo(x, y); else path.lineTo(x, y);
+            for (int metres = -20; metres <= 20; metres += 20) {
+                float x = left + (float) ((metres - viewLeftMeters) * scale);
+                canvas.drawLine(x, top, x, top + drawnH, p);
             }
-            p.setStyle(Paint.Style.STROKE); p.setStrokeCap(Paint.Cap.ROUND); p.setStrokeJoin(Paint.Join.ROUND);
-            p.setColor(Color.rgb(3, 10, 18)); p.setStrokeWidth(12); canvas.drawPath(path, p);
-            p.setColor(Color.rgb(45, 212, 191)); p.setStrokeWidth(6); canvas.drawPath(path, p);
             p.setStyle(Paint.Style.FILL);
 
-            // Destination marker is only shown when it is inside this local window.
-            RouteEngine.Point destinationPoint = allPoints.get(allPoints.size() - 1);
-            if (haversineMeters(currentLat, currentLon, destinationPoint.latitude, destinationPoint.longitude) < 1900) {
-                drawDot(canvas, offsetX + (float) ((destinationPoint.longitude - minLon) * scale),
-                        offsetY + drawnH - (float) ((destinationPoint.latitude - minLat) * scale),
-                        Color.rgb(239, 68, 68), 7);
+            Path path = new Path();
+            boolean started = false;
+            for (RouteEngine.Point point : visible) {
+                double xMeters = (point.longitude - safeLon) * longitudeMetersPerDegree;
+                double yMeters = (point.latitude - safeLat) * 110540.0;
+                float x = left + (float) ((xMeters - viewLeftMeters) * scale);
+                float y = top + (float) ((viewTopMeters - yMeters) * scale);
+                if (!started) {
+                    path.moveTo(x, y);
+                    started = true;
+                } else {
+                    path.lineTo(x, y);
+                }
             }
-            float cx = offsetX + (float) ((visible.get(0).longitude - minLon) * scale);
-            float cy = offsetY + drawnH - (float) ((visible.get(0).latitude - minLat) * scale);
-            drawDot(canvas, cx, cy, Color.rgb(59, 130, 246), 9);
+
+            // Clip to the near-field viewport; the rest of the journey is intentionally hidden.
+            int save = canvas.save();
+            canvas.clipRect(mapBox);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeCap(Paint.Cap.ROUND);
+            p.setStrokeJoin(Paint.Join.ROUND);
+            p.setColor(Color.rgb(3, 10, 18));
+            p.setStrokeWidth(12);
+            canvas.drawPath(path, p);
+            p.setColor(Color.rgb(45, 212, 191));
+            p.setStrokeWidth(6);
+            canvas.drawPath(path, p);
+            p.setStyle(Paint.Style.FILL);
+
+            // Highlight the current GPS fix; destination is shown only if it is within this viewport.
+            float currentX = left + (float) ((0.0 - viewLeftMeters) * scale);
+            float currentY = top + (float) ((viewTopMeters - 0.0) * scale);
+            drawDot(canvas, currentX, currentY, Color.rgb(59, 130, 246), 9);
+
+            RouteEngine.Point destinationPoint = allPoints.get(allPoints.size() - 1);
+            double destinationX = (destinationPoint.longitude - safeLon) * longitudeMetersPerDegree;
+            double destinationY = (destinationPoint.latitude - safeLat) * 110540.0;
+            if (destinationX >= viewLeftMeters && destinationX <= viewRightMeters
+                    && destinationY >= viewBottomMeters && destinationY <= viewTopMeters) {
+                float x = left + (float) ((destinationX - viewLeftMeters) * scale);
+                float y = top + (float) ((viewTopMeters - destinationY) * scale);
+                drawDot(canvas, x, y, Color.rgb(239, 68, 68), 7);
+            }
+            canvas.restoreToCount(save);
         }
 
         canvas.drawLine(16, 344, width - 16, 344, linePaint(Color.rgb(46, 64, 86), 1.2f));
