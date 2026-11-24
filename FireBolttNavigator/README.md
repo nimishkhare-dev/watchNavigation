@@ -77,7 +77,7 @@ This source package was created in an environment without the Android SDK/Gradle
 The Android app now has an opt-in live watch mirror. Calculate a route, connect the Fire-Boltt, then tap **START LIVE NAVIGATION ON WATCH** once to install the route view and enable refreshes.
 
 - GPS updates continue to drive the phone map and route-step progress.
-- The watch face is rebuilt around the current GPS position and shows the next approximately 1.8 km of route, rather than fitting the entire journey into the tiny display.
+- The watch face is rebuilt around the current GPS position and shows only the next 100 m of route (plus 20 m behind the current fix for context). The surrounding local map window is approximately 180 m wide; the rest of the journey is hidden.
 - The watch image is refreshed after roughly 35 m of movement or a next-turn change, with a minimum 45-second interval between full face uploads.
 - Turn text alerts are sent separately when the maneuver changes, and distance buckets update no more often than every 12 seconds.
 - Only one full face upload is allowed at a time. A refresh requested during an upload is queued and reconsidered after completion.
