@@ -41,8 +41,8 @@ import java.util.concurrent.Executors;
 public class MainActivity extends Activity implements LocationListener, WatchBleClient.Listener {
     private static final int REQUEST_LOCATION = 101;
     private static final int REQUEST_BLUETOOTH = 102;
-    private static final long WATCH_FACE_MIN_REFRESH_INTERVAL_MS = 45_000L;
-    private static final float WATCH_FACE_MIN_MOVEMENT_METERS = 35f;
+    private static final long WATCH_FACE_MIN_REFRESH_INTERVAL_MS = 8_000L;
+    private static final float WATCH_FACE_MIN_MOVEMENT_METERS = 10f;
     private static final long WATCH_ALERT_MIN_INTERVAL_MS = 12_000L;
 
     private final ExecutorService io = Executors.newFixedThreadPool(2);
@@ -205,7 +205,7 @@ public class MainActivity extends Activity implements LocationListener, WatchBle
         LinearLayout.LayoutParams progressParams = params(-1, -2); progressParams.topMargin = dp(5);
         watchCard.addView(progressText, progressParams);
 
-        TextView disclaimer = text("Watch mirror uses experimental MoYoung Type-C 0x74 face uploads. After you start it once, the watch view refreshes when you move about 35 m or reach a new turn, with at least 45 seconds between full uploads. Turn-distance notifications are sent separately. This exact firmware still needs on-watch testing; keep this app open while navigating.",
+        TextView disclaimer = text("Watch mirror uses experimental MoYoung Type-C 0x74 face uploads. After you start it once, the watch view refreshes when you move about 10 m or reach a new turn, with at least 8 seconds between full uploads. Turn-distance notifications are sent separately. This exact firmware still needs on-watch testing; keep this app open while navigating.",
                 11, Color.rgb(120, 91, 34), false);
         LinearLayout.LayoutParams disclaimerParams = params(-1, -2); disclaimerParams.topMargin = dp(12);
         root.addView(disclaimer, disclaimerParams);
