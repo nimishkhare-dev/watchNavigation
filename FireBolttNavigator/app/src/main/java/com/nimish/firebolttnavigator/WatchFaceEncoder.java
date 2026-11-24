@@ -10,7 +10,6 @@ import android.graphics.RectF;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -19,7 +18,6 @@ public final class WatchFaceEncoder {
     public static final int WIDTH = 368;
     public static final int HEIGHT = 448;
     private static final int HEADER_SIZE = 1900;
-    private static final SecureRandom RANDOM = new SecureRandom();
 
     private WatchFaceEncoder() {}
 
@@ -50,7 +48,8 @@ public final class WatchFaceEncoder {
         header[0] = (byte) 0x81; // MoYoung Type B/C file ID; Type-C layout follows dawft.
         header[1] = 1;           // one full-screen BACKGROUND entry
         header[2] = 2;           // background + gallery preview blob
-        putU16LE(header, 3, 50000 + RANDOM.nextInt(15000));
+        // Keep the face design ID stable across GPS refreshes so the watch can replace the same navigation face.
+        putU16LE(header, 3, 0xB046);
 
         // Type-C FaceData entry: [field type, blob index, x, y, width, height].
         header[5] = 0x01;
