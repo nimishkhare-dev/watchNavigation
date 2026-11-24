@@ -199,8 +199,8 @@ public final class WatchFaceEncoder {
              * - 35 m either side of the fix
              * The map is not fitted to the whole trip or to the route's overall bounds.
              */
-            final double viewLeftMeters = -35.0;
-            final double viewRightMeters = 35.0;
+            final double viewLeftMeters = -90.0;
+            final double viewRightMeters = 90.0;
             final double viewBottomMeters = -20.0;
             final double viewTopMeters = 100.0;
 
