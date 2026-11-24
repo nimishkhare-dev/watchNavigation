@@ -41,6 +41,9 @@ import java.util.concurrent.Executors;
 public class MainActivity extends Activity implements LocationListener, WatchBleClient.Listener {
     private static final int REQUEST_LOCATION = 101;
     private static final int REQUEST_BLUETOOTH = 102;
+    private static final long WATCH_FACE_MIN_REFRESH_INTERVAL_MS = 45_000L;
+    private static final float WATCH_FACE_MIN_MOVEMENT_METERS = 35f;
+    private static final long WATCH_ALERT_MIN_INTERVAL_MS = 12_000L;
 
     private final ExecutorService io = Executors.newFixedThreadPool(2);
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -64,6 +67,15 @@ public class MainActivity extends Activity implements LocationListener, WatchBle
     private boolean navigating;
     private boolean mapReady;
     private boolean watchUploadInProgress;
+    private boolean watchMirrorEnabled;
+    private boolean watchRefreshQueued;
+    private boolean watchFirstFaceInstalled;
+    private long lastWatchFaceUploadStartedAt;
+    private Location lastWatchFaceLocation;
+    private String lastWatchFaceTurn = "";
+    private String lastWatchAlertKey = "";
+    private long lastWatchAlertAt;
+    private Runnable watchRefreshRunnable;
     private RouteEngine.Place selectedDestination;
     private RouteEngine.Route currentRoute;
     private int nextStepIndex;
@@ -93,7 +105,7 @@ public class MainActivity extends Activity implements LocationListener, WatchBle
 
         TextView title = text("FireBoltt Navigator", 25, Color.rgb(16, 26, 42), true);
         root.addView(title);
-        TextView subtitle = text("Choose a destination on your phone. Follow the route on your phone and send a route card to your Fire-Boltt 046.", 13, Color.rgb(87, 101, 122), false);
+        TextView subtitle = text("Live turn-by-turn navigation on your phone, with a periodically refreshed route view on your Fire-Boltt 046.", 13, Color.rgb(87, 101, 122), false);
         LinearLayout.LayoutParams subParams = params(-1, -2); subParams.topMargin = dp(5);
         root.addView(subtitle, subParams);
 
@@ -178,7 +190,7 @@ public class MainActivity extends Activity implements LocationListener, WatchBle
         watchCard.addView(connectButton, connectParams);
         connectButton.setOnClickListener(v -> requestBluetoothAndConnect());
 
-        sendWatchButton = button("SEND ROUTE CARD TO WATCH");
+        sendWatchButton = button("START LIVE NAVIGATION ON WATCH");
         LinearLayout.LayoutParams sendParams = params(-1, dp(48)); sendParams.topMargin = dp(8);
         watchCard.addView(sendWatchButton, sendParams);
         sendWatchButton.setOnClickListener(v -> sendRouteToWatch());
@@ -193,7 +205,7 @@ public class MainActivity extends Activity implements LocationListener, WatchBle
         LinearLayout.LayoutParams progressParams = params(-1, -2); progressParams.topMargin = dp(5);
         watchCard.addView(progressText, progressParams);
 
-        TextView disclaimer = text("Experimental watch mirror: the face upload uses the public MoYoung Type-C format and 0x74 transfer flow. It has not yet been verified on this exact Fire-Boltt firmware. Phone routing remains independent. Keep this app open while navigating.",
+        TextView disclaimer = text("Watch mirror uses experimental MoYoung Type-C 0x74 face uploads. After you start it once, the watch view refreshes when you move about 35 m or reach a new turn, with at least 45 seconds between full uploads. Turn-distance notifications are sent separately. This exact firmware still needs on-watch testing; keep this app open while navigating.",
                 11, Color.rgb(120, 91, 34), false);
         LinearLayout.LayoutParams disclaimerParams = params(-1, -2); disclaimerParams.topMargin = dp(12);
         root.addView(disclaimer, disclaimerParams);
@@ -290,6 +302,8 @@ public class MainActivity extends Activity implements LocationListener, WatchBle
                     navigating = true;
                     nextStepIndex = firstTurnStep(route);
                     lastSentTurn = "";
+                    lastWatchAlertKey = "";
+                    lastWatchAlertAt = 0L;
                     routeSummaryText.setText("Route: " + route.distanceLabel() + "  •  " + route.durationLabel());
                     status("Route ready. Keep this screen open for live location updates.");
                     drawPhoneRoute();
@@ -337,22 +351,29 @@ public class MainActivity extends Activity implements LocationListener, WatchBle
             else break;
         }
         refreshTurnInstruction();
-        RouteEngine.Step step = currentRoute.steps.get(Math.min(nextStepIndex, last));
-        if (!step.instruction.equals(lastSentTurn) && watchClient.isConnected()) sendCurrentTurnAlert();
+        sendCurrentTurnAlert();
     }
 
     private void sendCurrentTurnAlert() {
         if (!watchClient.isConnected() || currentRoute == null || currentRoute.steps.isEmpty()) return;
         RouteEngine.Step step = currentRoute.steps.get(Math.min(nextStepIndex, currentRoute.steps.size() - 1));
-        String alert = step.instruction;
+        float meters = Float.MAX_VALUE;
         if (currentLocation != null) {
             float[] d = new float[1];
             Location.distanceBetween(currentLocation.getLatitude(), currentLocation.getLongitude(), step.latitude, step.longitude, d);
-            alert += " in " + formatDistance(d[0]);
+            meters = d[0];
         }
-        if (!alert.equals(lastSentTurn)) {
+        String alert = step.instruction + (meters == Float.MAX_VALUE ? "" : " in " + formatDistance(meters));
+        int distanceBucket = meters == Float.MAX_VALUE ? -1 : Math.round(meters / 50f);
+        String alertKey = step.instruction + "|" + distanceBucket;
+        boolean turnChanged = !step.instruction.equals(lastSentTurn);
+        boolean distanceChanged = !alertKey.equals(lastWatchAlertKey);
+        long now = System.currentTimeMillis();
+        if (turnChanged || (distanceChanged && now - lastWatchAlertAt >= WATCH_ALERT_MIN_INTERVAL_MS)) {
             watchClient.sendTurnAlert(alert);
             lastSentTurn = step.instruction;
+            lastWatchAlertKey = alertKey;
+            lastWatchAlertAt = now;
         }
     }
 
@@ -417,10 +438,14 @@ public class MainActivity extends Activity implements LocationListener, WatchBle
         drawCurrentLocation();
         if (pendingRoute && selectedDestination != null) calculateRouteFromCurrentLocation();
         updateNavigationProgress(location);
+        maybeRefreshWatchFace(location);
     }
 
     private void stopNavigation() {
         navigating = false; pendingRoute = false; currentRoute = null;
+        watchMirrorEnabled = false;
+        watchRefreshQueued = false;
+        if (watchRefreshRunnable != null) main.removeCallbacks(watchRefreshRunnable);
         stopLocationUpdates();
         routeSummaryText.setText("Route: —");
         nextTurnText.setText("Navigation stopped.");
@@ -433,26 +458,97 @@ public class MainActivity extends Activity implements LocationListener, WatchBle
         if (currentRoute == null) { toast("Calculate a route first."); return; }
         if (!watchClient.isConnected()) { toast("Connect the Fire-Boltt first."); return; }
         if (watchUploadInProgress) return;
+
+        // One explicit user action installs the route view and enables subsequent live refreshes.
+        watchMirrorEnabled = true;
+        watchFirstFaceInstalled = false;
+        lastWatchFaceLocation = null;
+        lastWatchFaceTurn = "";
+        watchRefreshQueued = false;
+        startWatchFaceUpload(false);
+    }
+
+    private void startWatchFaceUpload(boolean liveRefresh) {
+        if (currentRoute == null || !watchClient.isConnected()) return;
+        if (watchUploadInProgress) {
+            watchRefreshQueued = true;
+            return;
+        }
+
         watchUploadInProgress = true;
-        progressBar.setProgress(0);
-        progressText.setText("Preparing 368 × 448 route card …");
-        int next = Math.min(nextStepIndex, Math.max(0, currentRoute.steps.size() - 1));
-        String instruction = currentRoute.steps.isEmpty() ? "Follow the route" : currentRoute.steps.get(next).instruction;
+        watchRefreshQueued = false;
+        lastWatchFaceUploadStartedAt = System.currentTimeMillis();
+        Location locationSnapshot = currentLocation == null ? null : new Location(currentLocation);
+        if (locationSnapshot != null) lastWatchFaceLocation = locationSnapshot;
+        String instruction = currentTurnInstruction();
+        lastWatchFaceTurn = instruction;
         String distance = nextTurnDistanceLabel();
-        double lat = currentLocation == null ? currentRoute.origin.latitude : currentLocation.getLatitude();
-        double lon = currentLocation == null ? currentRoute.origin.longitude : currentLocation.getLongitude();
+        double lat = locationSnapshot == null ? currentRoute.origin.latitude : locationSnapshot.getLatitude();
+        double lon = locationSnapshot == null ? currentRoute.origin.longitude : locationSnapshot.getLongitude();
         RouteEngine.Route routeSnapshot = currentRoute;
+        progressBar.setProgress(0);
+        progressText.setText(liveRefresh ? "Preparing live watch update …" : "Preparing 368 × 448 navigation view …");
+
         io.execute(() -> {
             try {
                 WatchFaceEncoder.BuildResult result = WatchFaceEncoder.build(routeSnapshot, lat, lon, instruction, distance);
                 runOnUiThread(() -> {
-                    progressText.setText("Built Type-C route face: " + result.faceFile.length + " bytes. Background RLE=" + result.backgroundRle + ", preview RLE=" + result.previewRle + ". Starting experimental 0x74 upload …");
+                    if (!watchClient.isConnected()) {
+                        watchUploadInProgress = false;
+                        progressText.setText("Watch disconnected before the navigation view could be sent.");
+                        return;
+                    }
+                    progressText.setText((liveRefresh ? "Refreshing" : "Installing") + " watch view (" + result.faceFile.length
+                            + " bytes). Background RLE=" + result.backgroundRle + ", preview RLE=" + result.previewRle + ".");
                     watchClient.uploadTypeCFace(result.faceFile);
                 });
             } catch (Exception e) {
-                runOnUiThread(() -> { watchUploadInProgress = false; progressText.setText("Build failed: " + safeMessage(e)); });
+                runOnUiThread(() -> {
+                    watchUploadInProgress = false;
+                    watchMirrorEnabled = false;
+                    watchRefreshQueued = false;
+                    progressText.setText("Watch face build failed: " + safeMessage(e));
+                });
             }
         });
+    }
+
+    private void maybeRefreshWatchFace(Location location) {
+        if (!watchMirrorEnabled || !navigating || currentRoute == null || location == null
+                || !watchClient.isConnected()) return;
+
+        String instruction = currentTurnInstruction();
+        float movedMeters = Float.MAX_VALUE;
+        if (lastWatchFaceLocation != null) movedMeters = lastWatchFaceLocation.distanceTo(location);
+        boolean turnChanged = !instruction.equals(lastWatchFaceTurn);
+        boolean movedEnough = movedMeters >= WATCH_FACE_MIN_MOVEMENT_METERS;
+        if (!turnChanged && !movedEnough) return;
+
+        if (watchUploadInProgress) {
+            watchRefreshQueued = true;
+            return;
+        }
+
+        long elapsed = System.currentTimeMillis() - lastWatchFaceUploadStartedAt;
+        long delay = WATCH_FACE_MIN_REFRESH_INTERVAL_MS - elapsed;
+        if (delay > 0) {
+            watchRefreshQueued = true;
+            if (watchRefreshRunnable != null) main.removeCallbacks(watchRefreshRunnable);
+            watchRefreshRunnable = () -> {
+                if (!watchRefreshQueued) return;
+                watchRefreshQueued = false;
+                maybeRefreshWatchFace(currentLocation);
+            };
+            main.postDelayed(watchRefreshRunnable, delay);
+            return;
+        }
+
+        startWatchFaceUpload(true);
+    }
+
+    private String currentTurnInstruction() {
+        if (currentRoute == null || currentRoute.steps == null || currentRoute.steps.isEmpty()) return "Follow the route";
+        return currentRoute.steps.get(Math.min(nextStepIndex, currentRoute.steps.size() - 1)).instruction;
     }
 
     private String nextTurnDistanceLabel() {
@@ -518,12 +614,23 @@ public class MainActivity extends Activity implements LocationListener, WatchBle
             watchText.setText("Connected: " + deviceName + " (MoYoung V2 services ready)");
             sendWatchButton.setEnabled(currentRoute != null);
             toast("Watch connected.");
+            if (navigating && currentRoute != null) sendCurrentTurnAlert();
+            if (watchMirrorEnabled && navigating) {
+                lastWatchFaceLocation = null;
+                maybeRefreshWatchFace(currentLocation);
+            }
         });
     }
 
     @Override public void onDisconnected(String reason) {
         runOnUiThread(() -> {
             watchText.setText("Disconnected"); sendWatchButton.setEnabled(false);
+            if (watchUploadInProgress) {
+                watchUploadInProgress = false;
+                watchMirrorEnabled = false;
+                watchRefreshQueued = false;
+                progressText.setText("Watch disconnected during face transfer. Reconnect and start watch navigation again.");
+            }
             status(reason);
         });
     }
@@ -532,7 +639,8 @@ public class MainActivity extends Activity implements LocationListener, WatchBle
         runOnUiThread(() -> {
             int percentage = totalBytes == 0 ? 0 : (int) ((sentBytes * 100L) / totalBytes);
             progressBar.setProgress(percentage);
-            progressText.setText("Sending route face: " + percentage + "% • chunk " + chunkIndex + "/" + totalChunks);
+            progressText.setText((watchFirstFaceInstalled ? "Updating live watch view: " : "Installing watch view: ")
+                    + percentage + "% • chunk " + chunkIndex + "/" + totalChunks);
         });
     }
 
@@ -541,8 +649,12 @@ public class MainActivity extends Activity implements LocationListener, WatchBle
             watchUploadInProgress = false;
             progressBar.setProgress(100);
             progressText.setText("Watch returned completion value " + ackHex + ". Face activation command sent. Check the watch face selector.");
-            watchText.setText("Connected • route face transfer completed");
-            toast("Route face transfer completed. Check the watch.");
+            watchText.setText(watchMirrorEnabled ? "Connected • live navigation mirror enabled" : "Connected • route view sent");
+            if (!watchFirstFaceInstalled) toast("Watch navigation view installed.");
+            watchFirstFaceInstalled = true;
+            if (watchMirrorEnabled && navigating) {
+                main.postDelayed(() -> maybeRefreshWatchFace(currentLocation), 500L);
+            }
         });
     }
 
@@ -550,7 +662,10 @@ public class MainActivity extends Activity implements LocationListener, WatchBle
         runOnUiThread(() -> {
             if (watchUploadInProgress) {
                 watchUploadInProgress = false;
-                progressText.setText("Watch upload did not complete: " + message);
+                watchMirrorEnabled = false;
+                watchRefreshQueued = false;
+                if (watchRefreshRunnable != null) main.removeCallbacks(watchRefreshRunnable);
+                progressText.setText("Watch upload did not complete: " + message + " Start watch navigation again after checking the connection.");
             }
             status(message);
             watchText.setText(message);

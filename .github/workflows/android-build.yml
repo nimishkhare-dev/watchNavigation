@@ -1,0 +1,24 @@
+name: Android build check
+on:
+  push:
+    branches: [live-watch-navigation]
+  pull_request:
+    branches: [main]
+    paths:
+      - "FireBolttNavigator/**"
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11"
+      - name: Assemble debug APK
+        run: gradle -p FireBolttNavigator assembleDebug --no-daemon

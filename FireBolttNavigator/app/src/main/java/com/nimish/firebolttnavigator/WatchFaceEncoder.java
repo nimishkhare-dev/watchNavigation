@@ -190,17 +190,46 @@ public final class WatchFaceEncoder {
         for (int y = 130; y < 330; y += 38) canvas.drawLine(22, y, width - 22, y, p);
         p.setStyle(Paint.Style.FILL);
 
-        List<RouteEngine.Point> points = route.geometry;
-        if (points != null && !points.isEmpty()) {
+        List<RouteEngine.Point> allPoints = route.geometry;
+        if (allPoints != null && !allPoints.isEmpty()) {
+            // Show the next ~1.8 km around the moving position, not a tiny full-route overview.
+            int nearest = 0;
+            double nearestDistance = Double.MAX_VALUE;
+            for (int i = 0; i < allPoints.size(); i++) {
+                RouteEngine.Point point = allPoints.get(i);
+                double d = haversineMeters(currentLat, currentLon, point.latitude, point.longitude);
+                if (d < nearestDistance) { nearestDistance = d; nearest = i; }
+            }
+
+            List<RouteEngine.Point> visible = new ArrayList<>();
+            if (Double.isFinite(currentLat) && Double.isFinite(currentLon)) {
+                visible.add(new RouteEngine.Point(currentLat, currentLon));
+            } else {
+                visible.add(allPoints.get(nearest));
+            }
+            double aheadMeters = 0;
+            RouteEngine.Point previous = allPoints.get(nearest);
+            for (int i = nearest; i < allPoints.size(); i++) {
+                RouteEngine.Point point = allPoints.get(i);
+                if (i > nearest) aheadMeters += haversineMeters(previous.latitude, previous.longitude,
+                        point.latitude, point.longitude);
+                visible.add(point);
+                previous = point;
+                if (aheadMeters >= 1800) break;
+            }
+            if (visible.size() < 2 && allPoints.size() > 1) visible.add(allPoints.get(allPoints.size() - 1));
+
             double minLat = Double.MAX_VALUE, maxLat = -Double.MAX_VALUE;
             double minLon = Double.MAX_VALUE, maxLon = -Double.MAX_VALUE;
-            for (RouteEngine.Point point : points) {
+            for (RouteEngine.Point point : visible) {
                 minLat = Math.min(minLat, point.latitude); maxLat = Math.max(maxLat, point.latitude);
                 minLon = Math.min(minLon, point.longitude); maxLon = Math.max(maxLon, point.longitude);
             }
-            if (Math.abs(maxLat - minLat) < 0.00001) { maxLat += 0.0005; minLat -= 0.0005; }
-            if (Math.abs(maxLon - minLon) < 0.00001) { maxLon += 0.0005; minLon -= 0.0005; }
-            float pad = 30;
+            // Give the moving position room on screen and avoid zero-sized bounds.
+            double latPad = Math.max(0.00045, (maxLat - minLat) * 0.18);
+            double lonPad = Math.max(0.00045, (maxLon - minLon) * 0.18);
+            minLat -= latPad; maxLat += latPad; minLon -= lonPad; maxLon += lonPad;
+            float pad = 24;
             float usableW = mapBox.width() - 2 * pad;
             float usableH = mapBox.height() - 2 * pad;
             double latScale = usableH / (maxLat - minLat);
@@ -211,8 +240,8 @@ public final class WatchFaceEncoder {
             float offsetX = mapBox.left + (mapBox.width() - drawnW) / 2f;
             float offsetY = mapBox.top + (mapBox.height() - drawnH) / 2f;
             Path path = new Path();
-            for (int i = 0; i < points.size(); i++) {
-                RouteEngine.Point point = points.get(i);
+            for (int i = 0; i < visible.size(); i++) {
+                RouteEngine.Point point = visible.get(i);
                 float x = offsetX + (float) ((point.longitude - minLon) * scale);
                 float y = offsetY + drawnH - (float) ((point.latitude - minLat) * scale);
                 if (i == 0) path.moveTo(x, y); else path.lineTo(x, y);
@@ -222,18 +251,16 @@ public final class WatchFaceEncoder {
             p.setColor(Color.rgb(45, 212, 191)); p.setStrokeWidth(6); canvas.drawPath(path, p);
             p.setStyle(Paint.Style.FILL);
 
-            RouteEngine.Point start = points.get(0), end = points.get(points.size() - 1);
-            drawDot(canvas, offsetX + (float) ((start.longitude - minLon) * scale),
-                    offsetY + drawnH - (float) ((start.latitude - minLat) * scale), Color.rgb(34, 197, 94), 7);
-            drawDot(canvas, offsetX + (float) ((end.longitude - minLon) * scale),
-                    offsetY + drawnH - (float) ((end.latitude - minLat) * scale), Color.rgb(239, 68, 68), 7);
-            if (Double.isFinite(currentLat) && Double.isFinite(currentLon)) {
-                float cx = offsetX + (float) ((currentLon - minLon) * scale);
-                float cy = offsetY + drawnH - (float) ((currentLat - minLat) * scale);
-                cx = Math.max(mapBox.left + 8, Math.min(mapBox.right - 8, cx));
-                cy = Math.max(mapBox.top + 8, Math.min(mapBox.bottom - 8, cy));
-                drawDot(canvas, cx, cy, Color.rgb(59, 130, 246), 8);
+            // Destination marker is only shown when it is inside this local window.
+            RouteEngine.Point destinationPoint = allPoints.get(allPoints.size() - 1);
+            if (haversineMeters(currentLat, currentLon, destinationPoint.latitude, destinationPoint.longitude) < 1900) {
+                drawDot(canvas, offsetX + (float) ((destinationPoint.longitude - minLon) * scale),
+                        offsetY + drawnH - (float) ((destinationPoint.latitude - minLat) * scale),
+                        Color.rgb(239, 68, 68), 7);
             }
+            float cx = offsetX + (float) ((visible.get(0).longitude - minLon) * scale);
+            float cy = offsetY + drawnH - (float) ((visible.get(0).latitude - minLat) * scale);
+            drawDot(canvas, cx, cy, Color.rgb(59, 130, 246), 9);
         }
 
         canvas.drawLine(16, 344, width - 16, 344, linePaint(Color.rgb(46, 64, 86), 1.2f));
@@ -244,6 +271,17 @@ public final class WatchFaceEncoder {
         p.setColor(Color.rgb(148, 163, 184)); p.setTextSize(11); p.setFakeBoldText(false);
         canvas.drawText(turnDistance == null ? "Follow the highlighted line" : turnDistance, 18, 434, p);
         return bitmap;
+    }
+
+    private static double haversineMeters(double lat1, double lon1, double lat2, double lon2) {
+        if (!Double.isFinite(lat1) || !Double.isFinite(lon1)) return Double.MAX_VALUE;
+        double earth = 6371000.0;
+        double dLat = Math.toRadians(lat2 - lat1);
+        double dLon = Math.toRadians(lon2 - lon1);
+        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
+                * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+        return earth * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
     private static Paint linePaint(int color, float width) {
