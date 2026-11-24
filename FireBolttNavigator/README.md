@@ -20,7 +20,7 @@ The BLE **0x6E** wallpaper transfer was verified earlier against the user's Fire
 
 This prototype instead builds a standards-documented MoYoung Type-C face and attempts the separate **0x74** face-upload flow. Type-C face structure and the generic 0x74 upload path are documented by community MoYoung tools, but this combination has **not yet been verified on this exact Fire-Boltt 046 / MOY-KLA3-2.0.5 firmware**. The route upload is therefore experimental. The app shows a warning and requires the user to press **SEND ROUTE CARD TO WATCH** explicitly. It does not start a watch upload automatically.
 
-The watch card is a route overview (route line, start/end/current markers, next maneuver); it is not a full street-tile map. The phone displays the full OSM street map. A static route card is uploaded at the user's request; subsequent turn changes may be sent as short text alerts. The route card does not automatically refresh on every GPS fix.
+The watch card is a route overview (route line, start/end/current markers, next maneuver); it is not a full street-tile map. The phone displays the full OSM street map. A route card is uploaded once when the user starts the watch mirror, then refreshed as the phone GPS position and next turn change. Full-face updates are rate-limited to avoid overlapping BLE transfers.
 
 ## Build in Android Studio
 
@@ -78,7 +78,7 @@ The Android app now has an opt-in live watch mirror. Calculate a route, connect 
 
 - GPS updates continue to drive the phone map and route-step progress.
 - The watch face is rebuilt around the current GPS position and shows only the next 100 m of route (plus 20 m behind the current fix for context). The surrounding local map window is approximately 180 m wide; the rest of the journey is hidden.
-- The watch image is refreshed after roughly 35 m of movement or a next-turn change, with a minimum 45-second interval between full face uploads.
+- The watch image is refreshed after roughly 10 m of movement or a next-turn change, with a minimum 8-second interval between full face uploads. The face uses a stable design ID across refreshes, intended to keep updating the same navigation face rather than creating a random new ID each time.
 - Turn text alerts are sent separately when the maneuver changes, and distance buckets update no more often than every 12 seconds.
 - Only one full face upload is allowed at a time. A refresh requested during an upload is queued and reconsidered after completion.
 - Stop Navigation disables the live mirror.
